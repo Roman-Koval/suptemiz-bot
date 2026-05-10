@@ -1,29 +1,27 @@
 """
 SupTemiz Telegram Bot — Railway deployment
-Читает заказы из Firestore, позволяет менять статусы прямо в Telegram.
-Уведомляет о новых заказах через Firestore listener.
 """
 
 import os
 import logging
+import asyncio
 import threading
+import json
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, ContextTypes
 )
 import firebase_admin
 from firebase_admin import credentials, firestore
-import json
 
 # =========================
-# Конфиг из переменных окружения (Railway → Variables)
+# Конфиг из переменных окружения
 # =========================
 BOT_TOKEN     = os.environ["BOT_TOKEN"]
 ADMIN_CHAT_ID = int(os.environ["ADMIN_CHAT_ID"])
 
-# Firebase: читаем из env-переменной FIREBASE_SERVICE_ACCOUNT (JSON-строка)
-_sa_json = os.environ["FIREBASE_SERVICE_ACCOUNT"]
-_sa_dict = json.loads(_sa_json)
+_sa_dict = json.loads(os.environ["FIREBASE_SERVICE_ACCOUNT"])
 cred = credentials.Certificate(_sa_dict)
 firebase_admin.initialize_app(cred)
 db = firestore.client()
@@ -201,18 +199,21 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await cmd_list(update, ctx)
 
 # =========================
-# Firestore listener — уведомление о новых заказах
+# Firestore listener — уведомления о новых заказах
+# Запускается в отдельном потоке, отправляет через event loop бота
 # =========================
-def start_firestore_listener(app: Application):
-    """Следит за новыми документами в коллекции orders и уведомляет в Telegram."""
-    import asyncio
-
+def start_firestore_listener(loop, bot):
+    """
+    Слушает новые документы в коллекции orders.
+    loop — event loop бота (из asyncio)
+    bot — объект Bot для отправки сообщений
+    """
     seen_ids = set()
 
-    # Инициализируем seen_ids текущими документами (не уведомляем при старте)
+    # Загружаем существующие ID чтобы не уведомлять при старте
     for d in db.collection("orders").stream():
         seen_ids.add(d.id)
-    log.info(f"Listener: {len(seen_ids)} существующих заказов загружено")
+    log.info(f"Listener инициализирован, существующих заказов: {len(seen_ids)}")
 
     def on_snapshot(col_snapshot, changes, read_time):
         for change in changes:
@@ -223,25 +224,29 @@ def start_firestore_listener(app: Application):
                 log.info(f"Новый заказ: {doc_id}")
 
                 text = "🔔 <b>НОВЫЙ ЗАКАЗ!</b>\n\n" + format_order(order)
-                kb = status_keyboard(doc_id, "pending")
+                kb   = status_keyboard(doc_id, "pending")
 
-                # Отправляем через event loop бота
-                future = asyncio.run_coroutine_threadsafe(
-                    app.bot.send_message(
-                        chat_id=ADMIN_CHAT_ID,
-                        text=text,
-                        parse_mode="HTML",
-                        reply_markup=kb
-                    ),
-                    app.bot._loop  # type: ignore
-                )
-                try:
-                    future.result(timeout=15)
-                except Exception as e:
-                    log.error(f"Ошибка отправки уведомления: {e}")
+                async def send():
+                    try:
+                        await bot.send_message(
+                            chat_id=ADMIN_CHAT_ID,
+                            text=text,
+                            parse_mode="HTML",
+                            reply_markup=kb
+                        )
+                        log.info(f"Уведомление о заказе {doc_id} отправлено")
+                    except Exception as e:
+                        log.error(f"Ошибка отправки уведомления: {e}")
 
+                # Безопасно запускаем корутину в event loop бота
+                asyncio.run_coroutine_threadsafe(send(), loop)
+
+    # Подписываемся на коллекцию
     db.collection("orders").on_snapshot(on_snapshot)
-    log.info("Firestore listener запущен")
+    log.info("Firestore listener запущен и слушает новые заказы")
+
+    # Держим поток живым
+    threading.Event().wait()
 
 # =========================
 # Запуск
@@ -255,11 +260,15 @@ def main():
     application.add_handler(CommandHandler("stats",   cmd_stats))
     application.add_handler(CallbackQueryHandler(on_callback))
 
-    # Запускаем Firestore listener в отдельном потоке
-    # (он запускается после того как event loop бота уже создан)
-    application.post_init = lambda app: threading.Thread(
-        target=start_firestore_listener, args=(app,), daemon=True
-    ).start()
+    # Получаем event loop и запускаем listener ДО polling
+    loop = asyncio.get_event_loop()
+
+    listener_thread = threading.Thread(
+        target=start_firestore_listener,
+        args=(loop, application.bot),
+        daemon=True
+    )
+    listener_thread.start()
 
     log.info("Бот запущен (polling)")
     application.run_polling(drop_pending_updates=True)

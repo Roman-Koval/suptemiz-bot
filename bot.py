@@ -88,6 +88,13 @@ def format_order(order):
     has_tg = bool(order.get("clientChatId"))
     tg_icon = "✈️" if has_tg else "📵"
     tg_line = f"\n{tg_icon} <b>Telegram:</b> {'подписан' if has_tg else 'не подписан'}"
+
+    extras = order.get("extras", [])
+    extras_line = ""
+    if extras:
+        extras_str = ", ".join(f"{e.get('name','')} +{e.get('price','')}₺" for e in extras)
+        extras_line = f"✨ <b>Допуслуги:</b> {extras_str}\n"
+
     return (
         f"🧽 <b>Заказ {order.get('id','—')}</b>\n\n"
         f"👤 <b>Имя:</b> {order.get('name','—')}\n"
@@ -99,10 +106,7 @@ def format_order(order):
         f"💰 <b>Цена:</b> {order.get('price','—')} ₺\n"
         f"📅 <b>Дата:</b> {order.get('date','—')} {order.get('time','')}\n"
         f"💬 <b>Коммент:</b> {order.get('comment') or '—'}\n"
-        + (("✨ <b>Допуслуги:</b> " + ", ".join(
-            f"{e.get('name','')} +{e.get('price','')}₺"
-            for e in order.get('extras', [])
-        ) + "\n") if order.get('extras') else "")
+        f"{extras_line}"
         f"🔄 <b>Статус:</b> {status_label(order.get('status'))}"
     )
 

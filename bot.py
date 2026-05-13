@@ -99,6 +99,10 @@ def format_order(order):
         f"💰 <b>Цена:</b> {order.get('price','—')} ₺\n"
         f"📅 <b>Дата:</b> {order.get('date','—')} {order.get('time','')}\n"
         f"💬 <b>Коммент:</b> {order.get('comment') or '—'}\n"
+        + (("✨ <b>Допуслуги:</b> " + ", ".join(
+            f"{e.get('name','')} +{e.get('price','')}₺"
+            for e in order.get('extras', [])
+        ) + "\n") if order.get('extras') else "")
         f"🔄 <b>Статус:</b> {status_label(order.get('status'))}"
     )
 
